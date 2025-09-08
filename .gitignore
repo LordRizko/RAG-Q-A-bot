@@ -1,0 +1,23 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv
+venv/
+env/
+
+# Environment variables
+.env
+
+# IDE and editor specific
+.vscode/
+.idea/
+
+# Data files - uncomment the line below if you don't want to commit your data
+# data/
+
+# Streamlit
+.streamlit/

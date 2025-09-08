@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+langchain
+openai
+pypdf
+chromadb
+streamlit
+python-dotenv
+requests
