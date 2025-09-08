@@ -1,14 +1,6 @@
 import streamlit as st
+import requests
 import os
-import shutil
-from dotenv import load_dotenv
-
-from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.chains import ConversationalRetrievalChain
-from langchain_openai.chat_models import ChatOpenAI
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -17,58 +9,14 @@ st.set_page_config(
     layout="wide"
 )
 
-# Load environment variables
-load_dotenv()
-
-# --- Backend Logic ---
-
-def load_and_chunk_documents(file_path):
-    """
-    Loads a PDF, splits it into chunks.
-    """
-    loader = PyPDFLoader(file_path)
-    pages = loader.load_and_split()
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    chunks = text_splitter.split_documents(pages)
-    return chunks
-
-def create_vector_store(chunks):
-    """
-    Creates a Chroma vector store from document chunks using a sentence-transformer model.
-    """
-    embedding_function = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
-    vectorstore = Chroma.from_documents(chunks, embedding_function)
-    return vectorstore
-
-def create_qa_pipeline(vectorstore):
-    """
-    Creates a Question-Answering pipeline using an OpenRouter model with conversational memory.
-    """
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        raise ValueError("OPENROUTER_API_KEY not found in environment variables.")
-
-    llm = ChatOpenAI(
-        model_name="mistralai/mistral-7b-instruct",
-        temperature=0,
-        openai_api_key=api_key,
-        openai_api_base="https://openrouter.ai/api/v1",
-    )
-    
-    qa_chain = ConversationalRetrievalChain.from_llm(
-        llm,
-        retriever=vectorstore.as_retriever(),
-        return_source_documents=True,
-    )
-    return qa_chain
+# --- Backend URL ---
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 
 # --- Session State Initialization ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "qa_pipeline" not in st.session_state:
-    st.session_state.qa_pipeline = None
+if "pdf_processed" not in st.session_state:
+    st.session_state.pdf_processed = False
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
@@ -80,35 +28,25 @@ with st.sidebar:
     if uploaded_file is not None:
         if st.button("Process PDF"):
             with st.spinner("Processing PDF... This may take a moment."):
-                # Save the uploaded file temporarily
-                temp_dir = "temp_data"
-                if not os.path.exists(temp_dir):
-                    os.makedirs(temp_dir)
-                file_path = os.path.join(temp_dir, uploaded_file.name)
-                with open(file_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-
+                files = {"file": (uploaded_file.name, uploaded_file, "application/pdf")}
                 try:
-                    chunks = load_and_chunk_documents(file_path)
-                    vector_store = create_vector_store(chunks)
-                    st.session_state.qa_pipeline = create_qa_pipeline(vector_store)
-                    
-                    st.success("PDF processed successfully!")
-                    st.session_state.messages = []
-                    st.session_state.chat_history = []
-                except Exception as e:
-                    st.error(f"An error occurred: {e}")
-                finally:
-                    # Clean up the temporary file
-                    if os.path.exists(file_path):
-                        shutil.rmtree(temp_dir)
+                    response = requests.post(f"{BACKEND_URL}/upload-and-process-pdf/", files=files)
+                    if response.status_code == 200:
+                        st.success("PDF processed successfully!")
+                        st.session_state.pdf_processed = True
+                        st.session_state.messages = [] # Clear previous messages
+                        st.session_state.chat_history = [] # Clear chat history
+                    else:
+                        st.error(f"Error: {response.json().get('message', 'Unknown error')}")
+                except requests.exceptions.RequestException as e:
+                    st.error(f"Connection error: {e}")
 
-
-    if st.session_state.qa_pipeline:
+    if st.session_state.pdf_processed:
         if st.button("Clear Chat"):
             st.session_state.messages = []
             st.session_state.chat_history = []
             st.rerun()
+
 
 # --- Main Chat Interface ---
 st.title("📄 Document Q&A with RAG")
@@ -123,40 +61,51 @@ for message in st.session_state.messages:
                 for source in message["sources"]:
                      st.write(f"- Page {source.get('page', 'N/A')}")
 
+
 # Chat input
 if prompt := st.chat_input("Ask a question about the document..."):
-    if not st.session_state.qa_pipeline:
+    if not st.session_state.pdf_processed:
         st.warning("Please upload and process a PDF first.")
     else:
+        # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
+        # Get answer from backend
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 try:
-                    result = st.session_state.qa_pipeline({
-                        "question": prompt, 
+                    payload = {
+                        "question": prompt,
                         "chat_history": st.session_state.chat_history
-                    })
-                    answer = result.get("answer", "No answer found.")
-                    sources = result.get("source_documents", [])
+                    }
+                    response = requests.post(f"{BACKEND_URL}/ask/", json=payload)
                     
-                    st.markdown(answer)
-                    
-                    if sources:
-                        with st.expander("View Sources"):
-                            for source in sources:
-                                st.write(f"- Page {source.get('page', 'N/A')}")
-                    
-                    st.session_state.messages.append({
-                        "role": "assistant", 
-                        "content": answer,
-                        "sources": sources
-                    })
-                    
-                    st.session_state.chat_history.append((prompt, answer))
+                    if response.status_code == 200:
+                        result = response.json()
+                        answer = result.get("answer", "No answer found.")
+                        sources = result.get("source_documents", [])
+                        
+                        st.markdown(answer)
+                        
+                        if sources:
+                            with st.expander("View Sources"):
+                                for source in sources:
+                                    st.write(f"- Page {source.get('page', 'N/A')}")
+                        
+                        # Add assistant response to chat history
+                        st.session_state.messages.append({
+                            "role": "assistant", 
+                            "content": answer,
+                            "sources": sources
+                        })
+                        
+                        # Update chat history
+                        st.session_state.chat_history.append((prompt, answer))
 
-                except Exception as e:
-                    st.error(f"An error occurred: {e}")
+                    else:
+                        st.error(f"Error: {response.json().get('message', 'Unknown error')}")
+                except requests.exceptions.RequestException as e:
+                    st.error(f"Connection error: {e}")
 
