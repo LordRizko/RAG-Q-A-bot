@@ -1,9 +1,10 @@
-fastapi
-uvicorn
 langchain
 openai
 pypdf
 chromadb
 streamlit
 python-dotenv
-requests
+langchain-community
+langchain-openai
+sentence-transformers
+langchain-huggingface
